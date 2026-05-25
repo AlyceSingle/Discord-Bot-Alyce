@@ -1,10 +1,18 @@
-# Odysseia - 类脑娘社区 AI 助手
+# Discord Bot Alyce
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL%203.0-blue.svg)](LICENSE)
 [![Python 3.13](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Discord.py](https://img.shields.io/badge/discord.py-2.0+-5865F2?logo=discord&logoColor=white)](https://github.com/Rapptz/discord.py)
 
-Odysseia 是一个为 Discord 社区"类脑"量身打造的、功能丰富的 AI 助手。其核心是拥有鲜明人设的 AI "类脑娘"，她不仅能与社区成员进行富有个性的互动，还集成了一系列旨在提升社区活跃度、帮助新人融入的功能。
+这个仓库当前用于 **Alyce 聊天 Bot** 的精简部署版本，目标是稳定运行在低内存服务器上，只保留聊天、个人记忆、社区知识等核心机制。
+
+当前维护方式：
+- 发布代码到 GitHub：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/publish_snapshot_to_github.ps1`
+- 一键部署到 `root@single`：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy_to_single.ps1`
+
+说明：
+- GitHub 发布脚本会导出一份适合部署的精简快照，自动排除 `data/`、日志、大型素材和前端静态资源，避免把运行时垃圾和大文件推上仓库。
+- 下方文档仍保留历史项目说明，部分功能介绍与当前 `chat-only` 部署形态不完全一致，应以实际代码和部署脚本为准。
 
 ---
 
