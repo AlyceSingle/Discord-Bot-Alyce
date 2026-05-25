@@ -26,6 +26,25 @@ def _parse_ids(env_var: str) -> set[int]:
         return set()
 
 
+def _parse_bool(env_var: str, default: bool = False) -> bool:
+    """从环境变量中解析布尔值。"""
+    value = os.getenv(env_var)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _parse_int(env_var: str, default: int) -> int:
+    """从环境变量中解析整数值。"""
+    value = os.getenv(env_var)
+    if value is None:
+        return default
+    try:
+        return int(value.strip())
+    except (TypeError, ValueError):
+        return default
+
+
 # --- 机器人与服务器配置 ---
 # 用于在开发时快速同步命令，请在 .env 文件中设置
 GUILD_ID = os.getenv("GUILD_ID")
@@ -45,6 +64,34 @@ BRAIN_GIRL_APP_ID = (
     int(_brain_girl_app_id)
     if _brain_girl_app_id and _brain_girl_app_id.isdigit()
     else None
+)
+
+# --- 轻量运行模式 ---
+# 纯聊天模式：只保留 @ 提及聊天主链，跳过世界书、审核、商店、活动、工具等扩展功能。
+CHAT_ONLY_MODE = _parse_bool("CHAT_ONLY_MODE", False)
+
+# 禁用 AI 工具：适合低内存环境，避免加载工具链和搜索/RAG 扩展。
+DISABLE_AI_TOOLS = _parse_bool("DISABLE_AI_TOOLS", CHAT_ONLY_MODE)
+
+# 纯聊天模式下的运行时收缩参数。
+CHAT_ONLY_MAX_MESSAGES = _parse_int("CHAT_ONLY_MAX_MESSAGES", 150)
+CHAT_ONLY_HISTORY_LIMIT = _parse_int("CHAT_ONLY_HISTORY_LIMIT", 20)
+CHAT_ONLY_CONTEXT_CACHE_SIZE = _parse_int("CHAT_ONLY_CONTEXT_CACHE_SIZE", 300)
+
+# --- 轻量知识库模式 ---
+# 在纯聊天模式下，使用轻量 SQLite 版社区知识/成员档案，而不是完整的 PG/RAG 管线。
+LIGHT_KNOWLEDGE_ENABLED = _parse_bool("LIGHT_KNOWLEDGE_ENABLED", CHAT_ONLY_MODE)
+LIGHT_KNOWLEDGE_ADMIN_COMMANDS = _parse_bool(
+    "LIGHT_KNOWLEDGE_ADMIN_COMMANDS", False
+)
+LIGHT_KNOWLEDGE_AUTO_IMPORT = _parse_bool("LIGHT_KNOWLEDGE_AUTO_IMPORT", False)
+LIGHT_KNOWLEDGE_PROFILE_LIMIT = _parse_int("LIGHT_KNOWLEDGE_PROFILE_LIMIT", 2)
+LIGHT_KNOWLEDGE_KNOWLEDGE_LIMIT = _parse_int("LIGHT_KNOWLEDGE_KNOWLEDGE_LIMIT", 4)
+LIGHT_KNOWLEDGE_DB_PATH = os.getenv(
+    "LIGHT_KNOWLEDGE_DB_PATH", os.path.join(DATA_DIR, "light_knowledge.sqlite3")
+)
+LIGHT_KNOWLEDGE_SEED_DIR = os.getenv(
+    "LIGHT_KNOWLEDGE_SEED_DIR", os.path.join(DATA_DIR, "seed")
 )
 
 # --- 交互视图相关 ---

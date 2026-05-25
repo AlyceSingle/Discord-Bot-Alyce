@@ -224,11 +224,11 @@ def _get_provider_configs_from_env() -> Dict[str, ProviderConfig]:
             api_key=openai_key,
             base_url=openai_url,
             models=[
-                "gpt-4",
-                "gpt-4o",
-                "claude-3-opus",
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-3-flash-preview",
             ],
-            default_model="gpt-4o",
+            default_model="gemini-2.5-flash",
         )
 
     custom_endpoints = _parse_custom_gemini_endpoints()

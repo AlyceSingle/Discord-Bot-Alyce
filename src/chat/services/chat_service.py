@@ -6,29 +6,17 @@ from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 import discord.abc
 
+from src import config
 # 导入所需的服务
 from src.chat.services.ai.service import ai_service
 from src.chat.utils.prompt_utils import replace_emojis
 from src.chat.services.prompt_service import prompt_service
 from src.chat.services.context_service_test import get_context_service  # 导入测试服务
-from src.chat.features.world_book.services.world_book_service import world_book_service
-from src.chat.features.affection.service.affection_service import affection_service
-from src.chat.features.odysseia_coin.service.coin_service import coin_service
 from src.chat.utils.database import chat_db_manager
-from src.chat.features.personal_memory.services.personal_memory_service import (
-    personal_memory_service,
-)
-from src.chat.features.personal_memory.services.conversation_memory_search_service import (
-    conversation_memory_search_service,
-)
 from src.chat.config import chat_config
 from src.chat.config.chat_config import DEBUG_CONFIG
-from src.chat.features.chat_settings.services.chat_settings_service import (
-    chat_settings_service,
-)
-from src.chat.services.ai.providers.base import GenerationConfig
+from src.chat.services.ai.providers.base import GenerationConfig, GenerationError
 from src.chat.services.ai.providers.provider_format import ProviderFormat, MessageFormat
-from src.chat.services.persona_preference_service import persona_preference_service
 
 log = logging.getLogger(__name__)
 
@@ -47,10 +35,91 @@ class ChatResult:
     tools_called: List[str] = field(default_factory=list)
 
 
+def _get_chat_settings_service():
+    from src.chat.features.chat_settings.services.chat_settings_service import (
+        chat_settings_service,
+    )
+
+    return chat_settings_service
+
+
+def _get_coin_service():
+    from src.chat.features.odysseia_coin.service.coin_service import coin_service
+
+    return coin_service
+
+
+def _get_world_book_service():
+    from src.chat.features.world_book.services.world_book_service import (
+        world_book_service,
+    )
+
+    return world_book_service
+
+
+def _get_light_knowledge_service():
+    from src.chat.services.light_knowledge_service import light_knowledge_service
+
+    return light_knowledge_service
+
+
+def _get_affection_service():
+    from src.chat.features.affection.service.affection_service import affection_service
+
+    return affection_service
+
+
+def _get_personal_memory_service():
+    from src.chat.features.personal_memory.services.personal_memory_service import (
+        personal_memory_service,
+    )
+
+    return personal_memory_service
+
+
+def _get_conversation_memory_search_service():
+    from src.chat.features.personal_memory.services.conversation_memory_search_service import (
+        conversation_memory_search_service,
+    )
+
+    return conversation_memory_search_service
+
+
+def _get_persona_preference_service():
+    from src.chat.services.persona_preference_service import (
+        persona_preference_service,
+    )
+
+    return persona_preference_service
+
+
 class ChatService:
     """
     负责编排整个AI聊天响应流程。
     """
+
+    async def _is_chat_globally_enabled(self) -> bool:
+        value = await chat_db_manager.get_global_setting("chat_enabled")
+        if value is None:
+            return True
+        return value.lower() in ("true", "1", "yes", "on")
+
+    async def _get_current_ai_model(self) -> str:
+        model = await chat_db_manager.get_global_setting("ai_model")
+        if model:
+            return model
+
+        available_models = ai_service.get_available_models()
+        if available_models:
+            return available_models[0]
+
+        return "openai_compatible:gpt-4o"
+
+    async def _increment_model_usage(
+        self, model_name: str, provider_name: str = "unknown"
+    ) -> None:
+        if model_name:
+            await chat_db_manager.increment_model_usage(model_name, provider_name)
 
     async def should_process_message(self, message: discord.Message) -> bool:
         """
@@ -59,10 +128,17 @@ class ChatService:
         author = message.author
         guild_id = message.guild.id if message.guild else 0
 
-        # 1. 全局聊天开关检查
-        if not await chat_settings_service.is_chat_globally_enabled(guild_id):
+        if not await self._is_chat_globally_enabled():
             log.info(f"服务器 {guild_id} 全局聊天已禁用，跳过前置检查。")
             return False
+
+        if config.CHAT_ONLY_MODE:
+            if await chat_db_manager.is_user_blacklisted(author.id, guild_id):
+                log.info(f"用户 {author.id} 在服务器 {guild_id} 被拉黑，跳过前置检查。")
+                return False
+            return True
+
+        chat_settings_service = _get_chat_settings_service()
 
         # 2. 频道/分类设置检查
         effective_config = {}
@@ -77,6 +153,7 @@ class ChatService:
             if isinstance(message.channel, discord.Thread) and message.channel.owner_id:
                 # 修正逻辑：只有当帖主明确设置了个人CD时，才算拥有"通行许可"
                 owner_id = message.channel.owner_id
+                coin_service = _get_coin_service()
                 owner_config = await coin_service.get_thread_cooldown_settings(owner_id)
 
                 if owner_config:
@@ -138,37 +215,34 @@ class ChatService:
         author = message.author
         guild_id = message.guild.id if message.guild else 0
 
-        # --- 获取最新的有效配置 ---
-        effective_config = {}
-        if isinstance(message.channel, discord.abc.GuildChannel):
-            effective_config = await chat_settings_service.get_effective_channel_config(
-                message.channel
-            )
-
-        # --- 个人记忆消息计数 ---
-        user_profile_data = await world_book_service.get_profile_by_discord_id(
-            author.id
-        )
-        personal_summary = None
-        if user_profile_data:
-            personal_summary = user_profile_data.get("personal_summary")
-
         user_content = processed_data["user_content"]
         replied_content = processed_data["replied_content"]
         image_data_list = processed_data["image_data_list"]
 
         try:
+            user_profile_data = None
+            personal_summary = None
+            world_book_entries = []
+            conversation_memory_text = None
+            latest_block_content = None
+            affection_status = None
+            persona_style = "default"
+
             # 2. --- 上下文与知识库检索 ---
             # 获取频道历史上下文
             # 使用新的测试上下文服务
-            channel_context = (
-                await get_context_service().get_formatted_channel_history_new(
-                    message.channel.id,
-                    author.id,
-                    guild_id,
-                    exclude_message_id=message.id,
+            try:
+                channel_context = (
+                    await get_context_service().get_formatted_channel_history_new(
+                        message.channel.id,
+                        author.id,
+                        guild_id,
+                        exclude_message_id=message.id,
+                    )
                 )
-            )
+            except Exception as ctx_e:
+                log.warning(f"获取频道上下文失败，将使用空上下文继续: {ctx_e}")
+                channel_context = []
 
             # RAG: 从世界书检索相关条目
             # --- RAG 查询优化 ---
@@ -178,87 +252,138 @@ class ChatService:
                 # replied_content 已包含 "> [回复 xxx]:" 等格式
                 rag_query = f"{replied_content}\n{user_content}"
 
-            log.info(f"为 RAG 搜索生成的查询: '{rag_query}'")
-
-            world_book_entries = await world_book_service.find_entries(
-                latest_query=rag_query,  # 使用合并后的查询
-                user_id=author.id,
-                guild_id=guild_id,
-                user_name=author.display_name,
-                conversation_history=channel_context,
-            )
-
-            # --- 新增：对话记忆 RAG 检索 ---
-            # 只有在用户有 profile 的情况下才进行对话记忆相关操作
-            # 这与之前的个人记忆逻辑保持一致
-            conversation_memory_text = None
-            latest_block_content = None
-
-            if user_profile_data:
-                # 先检查是否需要创建对话块（在检索前创建，确保最新对话可被检索）
-                await personal_memory_service.check_and_create_block_before_reply(
-                    user_id=author.id
-                )
-
-                # 获取最新对话块的 ID，用于在 RAG 检索时排除
-                # 这样可以避免检索到与当前对话历史（最新的10条）重复的内容
-                from src.chat.features.personal_memory.services.conversation_block_service import (
-                    conversation_block_service,
-                )
-
-                latest_block_id = await conversation_block_service.get_latest_block_id(
-                    str(author.id)
-                )
-                exclude_block_ids = [latest_block_id] if latest_block_id else None
-
-                # 检索与当前对话相关的历史对话块（排除最新的对话块）
-                conversation_memory_blocks = (
-                    await conversation_memory_search_service.search(
-                        discord_id=str(author.id),
-                        query=rag_query,
-                        exclude_block_ids=exclude_block_ids,
+            if config.CHAT_ONLY_MODE:
+                if config.LIGHT_KNOWLEDGE_ENABLED:
+                    try:
+                        light_context = await _get_light_knowledge_service().build_chat_context(
+                            query=rag_query,
+                            current_user_id=author.id,
+                            current_username=author.name,
+                        )
+                        user_profile_data = light_context.get("user_profile_data")
+                        personal_summary = light_context.get("personal_summary")
+                        world_book_entries = light_context.get("world_book_entries", [])
+                        log.info(
+                            "CHAT_ONLY_MODE: 已注入记忆上下文: 成员档案 %s 条, 社区知识 %s 条。",
+                            light_context.get("matched_profile_count", 0),
+                            light_context.get("matched_knowledge_count", 0),
+                        )
+                    except Exception as light_e:
+                        log.warning(
+                            f"记忆检索失败，将在无知识注入模式下继续对话: {light_e}"
+                        )
+                else:
+                    log.info(
+                        "CHAT_ONLY_MODE: 记忆上下文未启用，跳过世界书、个人记忆、好感度、类脑币和人设偏好。"
                     )
-                )
-                if conversation_memory_blocks:
-                    conversation_memory_text = (
-                        conversation_memory_search_service.format_blocks_for_context(
-                            conversation_memory_blocks
+            else:
+                world_book_service = _get_world_book_service()
+                try:
+                    user_profile_data = await world_book_service.get_profile_by_discord_id(
+                        author.id
+                    )
+                except Exception as profile_e:
+                    log.warning(
+                        f"获取用户 {author.id} 的个人档案失败，将使用空档案继续对话: {profile_e}"
+                    )
+
+                if user_profile_data:
+                    personal_summary = user_profile_data.get("personal_summary")
+
+                log.info(f"为 RAG 搜索生成的查询: '{rag_query}'")
+                try:
+                    world_book_entries = await world_book_service.find_entries(
+                        latest_query=rag_query,
+                        user_id=author.id,
+                        guild_id=guild_id,
+                        user_name=author.display_name,
+                        conversation_history=channel_context,
+                    )
+                except Exception as rag_e:
+                    log.warning(f"世界书/RAG 检索失败，将跳过检索继续对话: {rag_e}")
+                    world_book_entries = []
+
+                if user_profile_data:
+                    try:
+                        personal_memory_service = _get_personal_memory_service()
+                        conversation_memory_search_service = (
+                            _get_conversation_memory_search_service()
+                        )
+                        await personal_memory_service.check_and_create_block_before_reply(
+                            user_id=author.id
+                        )
+
+                        from src.chat.features.personal_memory.services.conversation_block_service import (
+                            conversation_block_service,
+                        )
+
+                        latest_block_id = (
+                            await conversation_block_service.get_latest_block_id(
+                                str(author.id)
+                            )
+                        )
+                        exclude_block_ids = (
+                            [latest_block_id] if latest_block_id else None
+                        )
+
+                        conversation_memory_blocks = (
+                            await conversation_memory_search_service.search(
+                                discord_id=str(author.id),
+                                query=rag_query,
+                                exclude_block_ids=exclude_block_ids,
+                            )
+                        )
+
+                        if conversation_memory_blocks:
+                            conversation_memory_text = conversation_memory_search_service.format_blocks_for_context(
+                                conversation_memory_blocks
+                            )
+                            log.info(
+                                f"检索到 {len(conversation_memory_blocks)} 个相关对话记忆块"
+                            )
+
+                        latest_block_content = (
+                            await conversation_block_service.get_latest_block_content(
+                                str(author.id)
+                            )
+                        )
+                        if latest_block_content:
+                            log.info(
+                                f"获取最新对话块: id={latest_block_content['id']}, "
+                                f"time={latest_block_content['time_description']}"
+                            )
+                    except Exception as memory_e:
+                        log.warning(f"个人记忆检索失败，将跳过记忆增强继续对话: {memory_e}")
+
+                affection_service = _get_affection_service()
+                try:
+                    affection_status = await affection_service.get_affection_status(
+                        author.id
+                    )
+                except Exception as affection_e:
+                    log.warning(
+                        f"获取好感度状态失败，将使用默认状态继续对话: {affection_e}"
+                    )
+
+                try:
+                    persona_style = (
+                        await _get_persona_preference_service().get_persona_style(
+                            str(author.id)
                         )
                     )
-                    log.info(
-                        f"检索到 {len(conversation_memory_blocks)} 个相关对话记忆块"
-                    )
+                except Exception as persona_e:
+                    log.warning(f"获取人设偏好失败，将使用默认人设继续对话: {persona_e}")
 
-                # --- 第三层记忆：获取最新对话块内容 ---
-                # 这是用户最近的对话历史，作为三层记忆的第三层注入到 prompt 末尾
-                latest_block_content = (
-                    await conversation_block_service.get_latest_block_content(
-                        str(author.id)
-                    )
-                )
-                if latest_block_content:
-                    log.info(
-                        f"获取最新对话块: id={latest_block_content['id']}, "
-                        f"time={latest_block_content['time_description']}"
-                    )
+                try:
+                    await affection_service.increase_affection_on_message(author.id)
+                except Exception as aff_e:
+                    log.error(f"增加用户 {author.id} 的好感度时出错: {aff_e}")
 
-            # --- 新增：集中获取所有上下文数据 ---
-            affection_status = await affection_service.get_affection_status(author.id)
-            persona_style = await persona_preference_service.get_persona_style(str(author.id))
-
-            # 3. --- 好感度与奖励更新（前置） ---
-            try:
-                # 在生成回复前更新好感度，以确保日志顺序正确
-                await affection_service.increase_affection_on_message(author.id)
-            except Exception as aff_e:
-                log.error(f"增加用户 {author.id} 的好感度时出错: {aff_e}")
-
-            try:
-                # 发放每日首次对话奖励
-                if await coin_service.grant_daily_message_reward(author.id):
-                    log.info(f"已为用户 {author.id} 发放每日首次对话奖励。")
-            except Exception as coin_e:
-                log.error(f"为用户 {author.id} 发放每日对话奖励时出错: {coin_e}")
+                try:
+                    if await _get_coin_service().grant_daily_message_reward(author.id):
+                        log.info(f"已为用户 {author.id} 发放每日首次对话奖励。")
+                except Exception as coin_e:
+                    log.error(f"为用户 {author.id} 发放每日对话奖励时出错: {coin_e}")
 
             # 4. --- 调用AI生成回复 ---
             # 记录发送给AI的核心上下文
@@ -266,12 +391,16 @@ class ChatService:
                 log.info(f"发送给AI -> 最终上下文: {channel_context}")
 
             # --- 获取当前设置的AI模型 ---
-            current_model = await chat_settings_service.get_current_ai_model()
+            current_model = await self._get_current_ai_model()
             log.info(f"当前使用的AI模型: {current_model}")
 
             # --- [新增] 根据上下文确定用于工具设置的用户ID ---
             user_id_for_settings: Optional[str] = None
-            if isinstance(message.channel, discord.Thread) and message.channel.owner_id:
+            if (
+                not config.CHAT_ONLY_MODE
+                and isinstance(message.channel, discord.Thread)
+                and message.channel.owner_id
+            ):
                 user_id_for_settings = str(message.channel.owner_id)
                 log.info(
                     f"消息在帖子中，将使用帖主 {user_id_for_settings} 的工具设置。"
@@ -281,7 +410,12 @@ class ChatService:
             # --- [结束] ---
 
             # 获取当前模型对应的 Provider
-            provider_name = ai_service._model_to_provider.get(current_model)
+            resolved_model_name, explicit_provider = ai_service.parse_model_id(
+                current_model
+            )
+            provider_name = explicit_provider or ai_service._model_to_provider.get(
+                resolved_model_name
+            )
             provider_instance = ai_service.get_provider(provider_name) if provider_name else None
             provider_type = provider_instance.provider_type if provider_instance else ""
             log.info(
@@ -317,12 +451,8 @@ class ChatService:
                 persona_style=persona_style,
             )
 
-            # 获取工具列表（根据 Provider 类型返回对应格式）
-            tools = await ai_service.tool_service.get_dynamic_tools_for_context(
-                user_id_for_settings, provider_type=provider_type
-            )
-
             # 定义工具执行器（使用闭包追踪本次请求中调用的工具）
+            tools: List[Any] = []
             _called_tools: List[str] = []
             _search_scopes: List[str] = []
 
@@ -344,10 +474,19 @@ class ChatService:
                     user_id_for_settings=user_id_for_settings,
                 )
 
+            if not config.DISABLE_AI_TOOLS and ai_service.tool_service:
+                try:
+                    tools = await ai_service.tool_service.get_dynamic_tools_for_context(
+                        user_id_for_settings, provider_type=provider_type
+                    )
+                except Exception as tools_e:
+                    log.warning(f"获取动态工具列表失败，将在无工具模式下继续: {tools_e}")
+                    tools = []
+
             # 创建生成配置（从数据库获取模型参数）
             from src.chat.services.ai.config.models import get_generation_config
 
-            gen_params = get_generation_config(current_model)
+            gen_params = get_generation_config(resolved_model_name)
             log.debug(
                 f"模型 {current_model} 生成参数: "
                 f"temperature={gen_params.temperature}, "
@@ -365,26 +504,30 @@ class ChatService:
                 thinking_budget_tokens=gen_params.thinking_budget_tokens,
             )
 
-            # 调用 AIService
-            result = await ai_service.generate_with_tools(
-                messages=messages,
-                config=generation_config,
-                model=current_model,
-                tools=tools,
-                tool_executor=tool_executor,
-                user_id_for_settings=user_id_for_settings,
-            )
+            if tools and ai_service.tool_service:
+                result = await ai_service.generate_with_tools(
+                    messages=messages,
+                    config=generation_config,
+                    model=current_model,
+                    tools=tools,
+                    tool_executor=tool_executor,
+                    user_id_for_settings=user_id_for_settings,
+                )
+            else:
+                result = await ai_service.generate(
+                    messages=messages,
+                    config=generation_config,
+                    model=current_model,
+                )
 
             # 记录模型使用统计
-            # 解析模型 ID（支持 "provider:model" 格式）
             model_name, explicit_provider = ai_service.parse_model_id(current_model)
             if explicit_provider:
                 provider_name = explicit_provider
             else:
                 provider_name = ai_service._model_to_provider.get(model_name, "unknown")
 
-            # 使用纯模型名记录（不含 provider 前缀）
-            await chat_settings_service.increment_model_usage(
+            await self._increment_model_usage(
                 model_name=model_name, provider_name=provider_name
             )
             log.debug(f"记录模型使用: {model_name} (Provider: {provider_name})")
@@ -395,11 +538,9 @@ class ChatService:
                 log.warning(f"AI服务未返回回复（重试+故障转移均失败），跳过用户 {author.id}。")
                 return None
 
-            # --- 新增：调用新的个人记忆服务 ---
-            # 在获得AI回复后，记录这次对话并根据需要触发总结
-            # 传递 current_model 使总结逻辑跟随主模型
-            if user_profile_data:
+            if not config.CHAT_ONLY_MODE and user_profile_data:
                 try:
+                    personal_memory_service = _get_personal_memory_service()
                     await personal_memory_service.update_and_conditionally_summarize_memory(
                         user_id=author.id,
                         user_name=author.display_name,
@@ -429,6 +570,22 @@ class ChatService:
             log.info(f"已为用户 {author.display_name} 生成AI回复: {final_response}")
             return ChatResult(content=final_response, tools_called=_called_tools)
 
+        except GenerationError as e:
+            log.error(f"[ChatService] AI 生成失败: {e}", exc_info=True)
+            error_text = str(e).lower()
+            if "429" in error_text or "rate limit" in error_text or "限流" in str(e):
+                return ChatResult(
+                    content="现在接口有点拥挤，我这边被限流了。你稍后再试一下。"
+                )
+            if (
+                "model not found" in error_text
+                or "模型不存在" in str(e)
+                or "空响应" in str(e)
+            ):
+                return ChatResult(
+                    content="当前配置的模型不可用，需要切换到可用模型后我才能继续回复。"
+                )
+            return ChatResult(content="AI 接口暂时不可用，请稍后再试。")
         except Exception as e:
             log.error(f"[ChatService] 处理聊天消息时出错: {e}", exc_info=True)
             return ChatResult(content="抱歉，处理你的消息时出现了问题，请稍后再试。")

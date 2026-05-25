@@ -114,36 +114,46 @@ class CoinService:
         today_str = today_beijing.isoformat()
         uid = str(user_id)
 
-        async with AsyncSessionLocal() as session:
-            async with session.begin():
-                result = await session.execute(
-                    select(UserCoins).where(UserCoins.user_id == uid).with_for_update()
-                )
-                row = result.scalar_one_or_none()
-
-                if row and row.last_daily_message_date:
-                    last_daily_date = datetime.fromisoformat(
-                        row.last_daily_message_date
-                    ).date()
-                    if last_daily_date >= today_beijing:
-                        return False
-
-                reward_amount = COIN_CONFIG["DAILY_FIRST_CHAT_REWARD"]
-                if row:
-                    row.balance += reward_amount
-                    row.last_daily_message_date = today_str
-                else:
-                    row = UserCoins(
-                        user_id=uid,
-                        balance=reward_amount,
-                        last_daily_message_date=today_str,
+        try:
+            async with AsyncSessionLocal() as session:
+                async with session.begin():
+                    result = await session.execute(
+                        select(UserCoins)
+                        .where(UserCoins.user_id == uid)
+                        .with_for_update()
                     )
-                    session.add(row)
+                    row = result.scalar_one_or_none()
 
-                tx = CoinTransaction(
-                    user_id=uid, amount=reward_amount, reason="每日首次与AI对话奖励"
-                )
-                session.add(tx)
+                    if row and row.last_daily_message_date:
+                        last_daily_date = datetime.fromisoformat(
+                            row.last_daily_message_date
+                        ).date()
+                        if last_daily_date >= today_beijing:
+                            return False
+
+                    reward_amount = COIN_CONFIG["DAILY_FIRST_CHAT_REWARD"]
+                    if row:
+                        row.balance += reward_amount
+                        row.last_daily_message_date = today_str
+                    else:
+                        row = UserCoins(
+                            user_id=uid,
+                            balance=reward_amount,
+                            last_daily_message_date=today_str,
+                        )
+                        session.add(row)
+
+                    tx = CoinTransaction(
+                        user_id=uid, amount=reward_amount, reason="每日首次与AI对话奖励"
+                    )
+                    session.add(tx)
+        except Exception as exc:
+            log.warning(
+                "无法发放每日首次发言奖励，已跳过。user_id=%s error=%s",
+                user_id,
+                exc,
+            )
+            return False
 
         log.info(f"用户 {user_id} 获得每日首次与AI对话奖励 ({reward_amount} 类脑币)。")
         return True

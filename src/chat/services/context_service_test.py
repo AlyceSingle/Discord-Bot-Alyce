@@ -6,6 +6,7 @@ import discord
 from discord.ext import commands
 import re
 from collections import OrderedDict
+from src import config
 from src.chat.config import chat_config
 
 log = logging.getLogger(__name__)
@@ -19,7 +20,11 @@ class ContextServiceTest:
         # 初始化一个有序字典作为LRU缓存，用于存储单条消息
         # 我们设定一个最大值，例如5000，以防止内存无限增长
         self.message_cache = OrderedDict()
-        self.MAX_CACHE_SIZE = 5000
+        self.MAX_CACHE_SIZE = (
+            config.CHAT_ONLY_CONTEXT_CACHE_SIZE
+            if config.CHAT_ONLY_MODE
+            else 5000
+        )
         if bot:
             log.info("ContextServiceTest 已通过构造函数设置 bot 实例。")
         else:
@@ -40,6 +45,9 @@ class ContextServiceTest:
         if not self.bot:
             log.error("ContextServiceTest 的 bot 实例未设置，无法获取频道消息历史。")
             return []
+
+        if config.CHAT_ONLY_MODE:
+            limit = min(limit, config.CHAT_ONLY_HISTORY_LIMIT)
 
         channel = self.bot.get_channel(channel_id)
         if not channel:

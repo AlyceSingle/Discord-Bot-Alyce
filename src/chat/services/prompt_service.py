@@ -4,7 +4,6 @@ import logging
 import base64
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone, timedelta
-from PIL import Image
 import io
 import json
 import re
@@ -69,7 +68,7 @@ class PromptService:
         return False
 
     @staticmethod
-    def _pil_image_to_base64(pil_image: Image.Image) -> tuple[str, str]:
+    def _pil_image_to_base64(pil_image: Any) -> tuple[str, str]:
         """
         将 PIL Image 转换为 base64 字符串
 
@@ -1237,6 +1236,8 @@ class PromptService:
         Returns:
             List[Dict]: OpenAI 兼容格式的消息列表
         """
+        from PIL import Image
+
         converted = []
         for msg in messages:
             role = msg.get("role", "")

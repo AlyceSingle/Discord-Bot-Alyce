@@ -8,28 +8,45 @@ AI 服务模块 - 多端点支持的统一 AI 服务
 - DeepSeek API
 - OpenAI 兼容端点
 """
+from importlib import import_module
 
-from .service import AIService, ai_service
-from .providers.base import (
-    BaseProvider,
-    GenerationConfig,
-    GenerationResult,
-    FinishReason,
-    ToolCall,
-    ProviderInfo,
-    AIServiceError,
-    ProviderNotAvailableError,
-    ModelNotSupportedError,
-    GenerationError,
-)
-from .providers import (
-    GeminiProvider,
-    GeminiCustomProvider,
-    DeepSeekProvider,
-    OpenAICompatibleProvider,
-)
-from .config.providers import ProviderConfig, get_provider_configs
-from .config.models import ModelConfig, get_model_configs, FALLBACK_PRIORITY
+_EXPORTS = {
+    "AIService": (".service", "AIService"),
+    "ai_service": (".service", "ai_service"),
+    "BaseProvider": (".providers.base", "BaseProvider"),
+    "GenerationConfig": (".providers.base", "GenerationConfig"),
+    "GenerationResult": (".providers.base", "GenerationResult"),
+    "FinishReason": (".providers.base", "FinishReason"),
+    "ToolCall": (".providers.base", "ToolCall"),
+    "ProviderInfo": (".providers.base", "ProviderInfo"),
+    "AIServiceError": (".providers.base", "AIServiceError"),
+    "ProviderNotAvailableError": (".providers.base", "ProviderNotAvailableError"),
+    "ModelNotSupportedError": (".providers.base", "ModelNotSupportedError"),
+    "GenerationError": (".providers.base", "GenerationError"),
+    "GeminiProvider": (".providers.gemini_provider", "GeminiProvider"),
+    "GeminiCustomProvider": (".providers.gemini_provider", "GeminiCustomProvider"),
+    "DeepSeekProvider": (".providers.deepseek_provider", "DeepSeekProvider"),
+    "OpenAICompatibleProvider": (
+        ".providers.openai_provider",
+        "OpenAICompatibleProvider",
+    ),
+    "ProviderConfig": (".config.providers", "ProviderConfig"),
+    "get_provider_configs": (".config.providers", "get_provider_configs"),
+    "ModelConfig": (".config.models", "ModelConfig"),
+    "get_model_configs": (".config.models", "get_model_configs"),
+    "FALLBACK_PRIORITY": (".config.models", "FALLBACK_PRIORITY"),
+}
+
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    module_name, attr_name = _EXPORTS[name]
+    module = import_module(module_name, __name__)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     # 核心服务

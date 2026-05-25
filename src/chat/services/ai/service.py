@@ -14,6 +14,7 @@ import json
 import os
 import logging
 from typing import Optional, Dict, Any, List
+import httpx
 
 from .providers.base import (
     BaseProvider,
@@ -21,12 +22,7 @@ from .providers.base import (
     GenerationResult,
     GenerationError,
     ModelNotSupportedError,
-)
-from .providers import (
-    GeminiProvider,
-    GeminiCustomProvider,
-    DeepSeekProvider,
-    OpenAICompatibleProvider,
+    ProviderNotAvailableError,
 )
 from .config.providers import get_provider_configs, ProviderConfig, _get_provider_configs_from_env
 from .config.models import get_fallback_providers, get_model_config
@@ -153,6 +149,8 @@ class AIService:
             Optional[BaseProvider]: Provider 实例
         """
         if config.type == "gemini":
+            from .providers.gemini_provider import GeminiProvider
+
             # Gemini 官方 API
             api_keys_str = os.getenv("GOOGLE_API_KEYS_LIST", "")
             api_keys = [k.strip() for k in api_keys_str.split(",") if k.strip()]
@@ -166,6 +164,8 @@ class AIService:
             )
 
         elif config.type == "deepseek":
+            from .providers.deepseek_provider import DeepSeekProvider
+
             return DeepSeekProvider(
                 api_key=config.api_key,
                 base_url=config.base_url,
@@ -173,6 +173,8 @@ class AIService:
             )
 
         elif config.type == "openai_compatible":
+            from .providers.openai_provider import OpenAICompatibleProvider
+
             return OpenAICompatibleProvider(
                 api_key=config.api_key,
                 base_url=config.base_url,
@@ -182,6 +184,9 @@ class AIService:
             )
 
         elif config.type == "custom":
+            from .providers.gemini_provider import GeminiCustomProvider
+            from .providers.openai_provider import OpenAICompatibleProvider
+
             # 自定义 Gemini 端点
             extra = config.extra or {}
             api_key = config.api_key or ""
@@ -216,6 +221,41 @@ class AIService:
         """
         self.bot = bot
         log.info("Discord Bot 实例已注入 AIService")
+
+    @staticmethod
+    def _is_retryable_error(error: Exception) -> bool:
+        """判断错误是否值得重试。"""
+        if isinstance(error, (ModelNotSupportedError, ProviderNotAvailableError)):
+            return False
+
+        if isinstance(error, GenerationError):
+            original_error = error.original_error
+            error_text = str(error).lower()
+
+            if isinstance(original_error, httpx.HTTPStatusError):
+                status_code = (
+                    original_error.response.status_code
+                    if original_error.response is not None
+                    else None
+                )
+                if status_code in {400, 401, 403, 404, 409, 422, 429}:
+                    return False
+
+            non_retryable_markers = (
+                "rate limit",
+                "rate_limit",
+                "429",
+                "model not found",
+                "invalid_request_error",
+                "未配置 api 密钥",
+                "模型不存在",
+                "限流",
+                "空响应",
+            )
+            if any(marker in error_text for marker in non_retryable_markers):
+                return False
+
+        return True
 
         # 同时注入到工具服务
         if self._tool_service:
@@ -577,6 +617,11 @@ class AIService:
                 return result
             except Exception as e:
                 last_error = e
+                if not self._is_retryable_error(e):
+                    log.warning(
+                        f"Provider '{provider_name}' 返回不可重试错误，停止重试: {e}"
+                    )
+                    break
                 if attempt < max_retries:
                     log.warning(
                         f"Provider '{provider_name}' 第 {attempt + 1}/{max_retries + 1} 次请求失败: {e}，"
@@ -654,6 +699,11 @@ class AIService:
                 return result
             except Exception as e:
                 last_error = e
+                if not self._is_retryable_error(e):
+                    log.warning(
+                        f"Provider '{provider_name}' 返回不可重试错误，停止工具调用重试: {e}"
+                    )
+                    break
                 if attempt < max_retries:
                     log.warning(
                         f"Provider '{provider_name}' 第 {attempt + 1}/{max_retries + 1} 次工具调用请求失败: {e}，"

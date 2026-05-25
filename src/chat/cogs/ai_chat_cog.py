@@ -6,11 +6,10 @@ import logging
 import re
 import io
 
+from src import config
 # 导入新的 Service
 from src.chat.services.chat_service import chat_service, ChatResult
 from src.chat.services.message_processor import message_processor
-from src.chat.features.tools.functions.summarize_channel import text_to_summary_image
-
 
 # 导入上下文服务
 
@@ -18,7 +17,6 @@ from src.chat.features.tools.functions.summarize_channel import text_to_summary_
 from src.chat.utils.database import chat_db_manager
 from src.chat.config.chat_config import CHAT_ENABLED, MESSAGE_SETTINGS
 from src.chat.config import chat_config
-from src.chat.features.odysseia_coin.service.coin_service import coin_service
 from src.chat.utils.message_utils import safe_reply, safe_send
 
 log = logging.getLogger(__name__)
@@ -67,16 +65,24 @@ class AIChatCog(commands.Cog):
             return
 
         # 新增：检查是否在帖子中，以及帖子创建者是否禁用了回复
-        if isinstance(message.channel, discord.Thread):
+        if not config.CHAT_ONLY_MODE and isinstance(message.channel, discord.Thread):
             # 检查帖子的创建者
             thread_owner = message.channel.owner
-            if thread_owner and await coin_service.blocks_thread_replies(
-                thread_owner.id
-            ):
-                log.info(
-                    f"帖子 '{message.channel.name}' 的创建者 {thread_owner.id} 已禁用回复，跳过消息处理。"
-                )
-                return
+            if thread_owner:
+                try:
+                    from src.chat.features.odysseia_coin.service.coin_service import (
+                        coin_service,
+                    )
+
+                    if await coin_service.blocks_thread_replies(thread_owner.id):
+                        log.info(
+                            f"帖子 '{message.channel.name}' 的创建者 {thread_owner.id} 已禁用回复，跳过消息处理。"
+                        )
+                        return
+                except Exception as thread_guard_e:
+                    log.warning(
+                        f"检查帖子回复限制失败，将继续按普通聊天处理: {thread_guard_e}"
+                    )
 
         # 黑名单检查
         if await chat_db_manager.is_user_globally_blacklisted(message.author.id):
@@ -101,6 +107,10 @@ class AIChatCog(commands.Cog):
                 # 1. 如果调用了总结工具，总是转换为图片发送
                 if "summarize_channel" in chat_result.tools_called:
                     log.info("调用了总结工具, 尝试转为图片发送。")
+                    from src.chat.features.tools.functions.summarize_channel import (
+                        text_to_summary_image,
+                    )
+
                     image_bytes = text_to_summary_image(response_text)
                     if image_bytes:
                         with io.BytesIO(image_bytes) as image_file:

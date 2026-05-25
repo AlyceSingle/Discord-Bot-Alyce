@@ -19,21 +19,7 @@ load_dotenv()
 # 从我们自己的模块中导入
 from src import config
 from src.chat.utils.database import chat_db_manager
-from src.chat.features.world_book.database.world_book_db_manager import (
-    world_book_db_manager,
-)
-
-# 3.6. 导入并注册所有 AI 工具
-# 这是一个关键步骤。通过在这里导入工具模块，我们可以确保
-# @register_tool 装饰器被执行，从而将工具函数及其 Schema
-# 添加到全局的 tool_registry 中。
-# 动态加载器会自动处理工具的加载，此处不再需要手动导入。
-
-# 导入全局 ai_service 实例
-from src.chat.services.ai.service import ai_service
-from src.chat.services.review_service import initialize_review_service
-from src.chat.features.work_game.services.work_db_service import WorkDBService
-from src.chat.utils.command_sync import sync_commands
+from src.chat.utils.command_sync import sync_commands, clear_remote_commands
 from src.chat.config import chat_config
 
 current_script_path = os.path.abspath(__file__)
@@ -182,10 +168,18 @@ class GuidanceBot(commands.Bot):
 
     def __init__(self):
         # 设置机器人需要监听的事件
-        intents = discord.Intents.default()
-        intents.members = True  # 需要监听成员加入、角色变化
-        intents.messages = True  # 需要监听消息内容
-        intents.reactions = True  # 需要监听反应事件
+        if config.CHAT_ONLY_MODE:
+            # 纯聊天模式只保留文本聊天所需的最小 intent 集合。
+            intents = discord.Intents.none()
+            intents.guilds = True
+            intents.messages = True
+            intents.message_content = True
+        else:
+            intents = discord.Intents.default()
+            intents.members = True
+            intents.messages = True
+            intents.message_content = True
+            intents.reactions = True
 
         # 解析 GUILD_ID 环境变量，支持用逗号分隔的多个 ID
         debug_guilds = None
@@ -216,7 +210,12 @@ class GuidanceBot(commands.Bot):
             init_kwargs["proxy"] = config.PROXY_URL
 
         # 设置消息缓存数量
-        init_kwargs["max_messages"] = 10000
+        init_kwargs["max_messages"] = (
+            config.CHAT_ONLY_MAX_MESSAGES if config.CHAT_ONLY_MODE else 10000
+        )
+        if config.CHAT_ONLY_MODE:
+            init_kwargs["member_cache_flags"] = discord.MemberCacheFlags.none()
+            init_kwargs["chunk_guilds_at_startup"] = False
 
         super().__init__(**init_kwargs)
 
@@ -271,15 +270,19 @@ class GuidanceBot(commands.Bot):
 
         # 定义所有需要扫描 cogs 的基础路径
         cog_paths_to_scan = [src_root / "chat" / "cogs"]
+        chat_only_allowed_cogs = {"ai_chat_cog.py"}
+        if config.LIGHT_KNOWLEDGE_ADMIN_COMMANDS:
+            chat_only_allowed_cogs.add("light_knowledge_admin_cog.py")
 
-        # 动态查找所有 features/*/cogs 目录并添加到扫描列表
-        features_dir = src_root / "chat" / "features"
-        if features_dir.is_dir():
-            for feature in features_dir.iterdir():
-                if feature.is_dir():
-                    cogs_dir = feature / "cogs"
-                    if cogs_dir.is_dir():
-                        cog_paths_to_scan.append(cogs_dir)
+        if not config.CHAT_ONLY_MODE:
+            # 动态查找所有 features/*/cogs 目录并添加到扫描列表
+            features_dir = src_root / "chat" / "features"
+            if features_dir.is_dir():
+                for feature in features_dir.iterdir():
+                    if feature.is_dir():
+                        cogs_dir = feature / "cogs"
+                        if cogs_dir.is_dir():
+                            cog_paths_to_scan.append(cogs_dir)
 
         # 遍历所有待扫描的目录，加载其中的 cog
         for path in cog_paths_to_scan:
@@ -287,6 +290,10 @@ class GuidanceBot(commands.Bot):
             log.info(f"--- 正在从 {path.relative_to(src_root.parent)} 加载 Cogs ---")
             for file in path.glob("*.py"):
                 if file.name.startswith("__"):
+                    continue
+
+                if config.CHAT_ONLY_MODE and file.name not in chat_only_allowed_cogs:
+                    log.info(f"CHAT_ONLY_MODE: 跳过加载 {file.name}")
                     continue
 
                 # --- 临时禁用图像生成 ---
@@ -342,6 +349,16 @@ class GuidanceBot(commands.Bot):
             log.info(
                 "未设置开发服务器ID，正在进行全局命令同步（可能需要一小时生效）..."
             )
+
+        if config.CHAT_ONLY_MODE and not self.tree.get_commands():
+            log.info("CHAT_ONLY_MODE 下没有斜杠命令，开始清理 Discord 端残留命令。")
+            try:
+                await clear_remote_commands(self, keep_names=["launch"])
+            except Exception as e:
+                log.error(f"清理残留命令时出错: {e}", exc_info=True)
+            log.info("--------------------")
+            log.info("--- 启动成功 ---")
+            return
 
         try:
             # 如果在初始化时设置了 debug_guilds，sync() 会自动同步到这些服务器。
@@ -425,8 +442,23 @@ async def main():
     log.info("初始化 Chat 数据库...")
     await chat_db_manager.init_async()
 
-    log.info("初始化 World Book 数据库...")
-    await world_book_db_manager.init_async()
+    if config.LIGHT_KNOWLEDGE_ENABLED:
+        log.info("初始化记忆库数据库...")
+        from src.chat.services.light_knowledge_service import light_knowledge_service
+
+        await light_knowledge_service.init_async()
+    else:
+        log.info("LIGHT_KNOWLEDGE_ENABLED 未启用，跳过记忆库初始化。")
+
+    if config.CHAT_ONLY_MODE:
+        log.info("CHAT_ONLY_MODE 已启用，跳过 World Book 数据库初始化。")
+    else:
+        log.info("初始化 World Book 数据库...")
+        from src.chat.features.world_book.database.world_book_db_manager import (
+            world_book_db_manager,
+        )
+
+        await world_book_db_manager.init_async()
 
     # 3.5. 初始化商店商品
     # 商品已迁移到PostgreSQL，不再需要从配置文件初始化
@@ -439,45 +471,62 @@ async def main():
     log.info("已加载并注册 AI 工具。")
 
     # 启动定时备份任务
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(backup_databases, "cron", hour=0, minute=0)
-    scheduler.start()
-    log.info("已启动每日数据库备份任务。")
+    if config.CHAT_ONLY_MODE:
+        log.info("CHAT_ONLY_MODE 已启用，跳过每日数据库备份任务。")
+    else:
+        scheduler = AsyncIOScheduler()
+        scheduler.add_job(backup_databases, "cron", hour=0, minute=0)
+        scheduler.start()
+        log.info("已启动每日数据库备份任务。")
 
     # 4. 创建并运行机器人实例
     bot = GuidanceBot()
+
+    # 延迟导入 AI 服务，避免在纯聊天模式之外过早拉起重模块
+    from src.chat.services.ai.service import ai_service
 
     # 在机器人启动时，将 bot 实例注入到 AIService 中
     # 这是确保工具能够访问 Discord API 的关键步骤
     ai_service.set_bot(bot)
 
-    # 加载工具并设置到 AIService
-    from src.chat.features.tools.tool_loader import load_tools_from_directory
-    from src.chat.features.tools.services.tool_service import ToolService
+    if config.DISABLE_AI_TOOLS:
+        log.info("DISABLE_AI_TOOLS 已启用，跳过工具链加载。")
+    else:
+        # 加载工具并设置到 AIService
+        from src.chat.features.tools.tool_loader import load_tools_from_directory
+        from src.chat.features.tools.services.tool_service import ToolService
 
-    available_tools, tool_map = load_tools_from_directory(
-        "src/chat/features/tools/functions"
-    )
-    tool_service = ToolService(
-        bot=bot, tool_map=tool_map, tool_declarations=available_tools
-    )
-    ai_service.set_tools(available_tools, tool_map, tool_service)
-    log.info(f"已加载 {len(available_tools)} 个工具: {list(tool_map.keys())}")
+        available_tools, tool_map = load_tools_from_directory(
+            "src/chat/features/tools/functions"
+        )
+        tool_service = ToolService(
+            bot=bot, tool_map=tool_map, tool_declarations=available_tools
+        )
+        ai_service.set_tools(available_tools, tool_map, tool_service)
+        log.info(f"已加载 {len(available_tools)} 个工具: {list(tool_map.keys())}")
 
     # 异步初始化 AI Service（从 PG 数据库加载 Provider 和 Model 配置）
     await ai_service.initialize()
 
-    from src.chat.services.gpt_image_service import gpt_image_service
-    await gpt_image_service.initialize()
+    if config.CHAT_ONLY_MODE:
+        log.info("CHAT_ONLY_MODE 已启用，跳过 GPTImageService 初始化。")
+    else:
+        from src.chat.services.gpt_image_service import gpt_image_service
+
+        await gpt_image_service.initialize()
 
     # 为 context_service_test 注入 bot 实例，使其能够访问缓存
     from src.chat.services.context_service_test import initialize_context_service_test
 
     initialize_context_service_test(bot)
-    # 初始化所有需要的服务实例
-    work_db_service = WorkDBService()
-    # 初始化审核服务，并将 bot 和其他服务实例注入
-    initialize_review_service(bot, work_db_service)
+    if config.CHAT_ONLY_MODE:
+        log.info("CHAT_ONLY_MODE 已启用，跳过审核/打工等扩展服务初始化。")
+    else:
+        from src.chat.features.work_game.services.work_db_service import WorkDBService
+        from src.chat.services.review_service import initialize_review_service
+
+        work_db_service = WorkDBService()
+        initialize_review_service(bot, work_db_service)
 
     token = os.getenv("DISCORD_TOKEN")
     if not token:

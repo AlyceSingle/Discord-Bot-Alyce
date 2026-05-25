@@ -153,9 +153,17 @@ class OpenAICompatibleProvider(BaseProvider):
             return self._process_response(result_data, model_name)
 
         except httpx.HTTPStatusError as e:
+            status_code = e.response.status_code if e.response is not None else "unknown"
+            response_text = e.response.text if e.response is not None else str(e)
+            if status_code == 429:
+                message = f"OpenAI Compatible API 限流（429）: {response_text}"
+            elif status_code == 404:
+                message = f"OpenAI Compatible API 模型不存在（404）: {response_text}"
+            else:
+                message = f"OpenAI Compatible API 错误（HTTP {status_code}）: {response_text}"
             log.error(f"OpenAI Compatible API HTTP 错误: {e}")
             raise GenerationError(
-                f"OpenAI Compatible API 错误: {e.response.text}",
+                message,
                 provider_type=self.provider_type,
                 original_error=e,
             )

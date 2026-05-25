@@ -307,3 +307,7 @@ src/chat/features/games/blackjack-web/vite.config.ts
 tutorial/
 
 AGENTS.md
+
+# Local deploy artifacts
+odysseia-deploy.tar.gz
+*.deploy.tar.gz
