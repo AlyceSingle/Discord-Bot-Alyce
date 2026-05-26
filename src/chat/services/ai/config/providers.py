@@ -59,6 +59,69 @@ class ProviderConfig:
         return self.enabled and bool(self.api_key)
 
 
+def _is_truthy_env(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _infer_openai_compatible_vision_support(model_name: str) -> bool:
+    model_lower = model_name.lower()
+
+    if "deepseek" in model_lower:
+        return False
+
+    vision_markers = (
+        "gemini",
+        "gpt-4o",
+        "gpt-4.1",
+        "claude-3",
+        "claude-4",
+        "vision",
+        "vl",
+    )
+    return any(marker in model_lower for marker in vision_markers)
+
+
+def _get_simple_openai_provider_from_env() -> Optional[ProviderConfig]:
+    """
+    从统一的三项环境变量加载单一 OpenAI 兼容 Provider。
+
+    只要设置了 AI_API_URL / AI_API_KEY / AI_MODEL，就优先使用这套简单配置，
+    这样部署端只需要改 3 个值，无需再切数据库里的 provider 体系。
+    """
+    api_key = os.getenv("AI_API_KEY")
+    base_url = os.getenv("AI_API_URL")
+    model = os.getenv("AI_MODEL")
+
+    if not (api_key and base_url and model):
+        return None
+
+    supports_vision_env = os.getenv("AI_SUPPORTS_VISION")
+    if supports_vision_env is None:
+        supports_vision = _infer_openai_compatible_vision_support(model)
+    else:
+        supports_vision = _is_truthy_env(supports_vision_env)
+
+    log.info(
+        "[ENV] 检测到简单模型配置 AI_API_URL / AI_API_KEY / AI_MODEL，"
+        "将优先使用单一 OpenAI 兼容 Provider。"
+    )
+
+    return ProviderConfig(
+        name="env_openai",
+        type="openai_compatible",
+        api_key=api_key,
+        base_url=base_url,
+        models=[model],
+        default_model=model,
+        extra={
+            "supports_vision": supports_vision,
+            "mode": "simple_env",
+        },
+    )
+
+
 async def get_provider_configs_from_db() -> Dict[str, ProviderConfig]:
     """
     从 PostgreSQL 数据库加载 Provider 配置。
@@ -183,6 +246,10 @@ def _get_provider_configs_from_env() -> Dict[str, ProviderConfig]:
     """
     从环境变量加载 Provider 配置（回退方法）
     """
+    simple_provider = _get_simple_openai_provider_from_env()
+    if simple_provider:
+        return {simple_provider.name: simple_provider}
+
     configs = {}
 
     google_api_keys = os.getenv("GOOGLE_API_KEYS_LIST", "")
@@ -247,6 +314,10 @@ async def get_provider_configs() -> Dict[str, ProviderConfig]:
     Returns:
         Dict[str, ProviderConfig]: Provider 名称到配置的映射
     """
+    simple_provider = _get_simple_openai_provider_from_env()
+    if simple_provider:
+        return {simple_provider.name: simple_provider}
+
     db_configs = await get_provider_configs_from_db()
     if db_configs:
         log.info(f"使用数据库 Provider 配置，共 {len(db_configs)} 个")

@@ -2,6 +2,7 @@
 
 import discord
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional
 import discord.abc
@@ -105,6 +106,10 @@ class ChatService:
         return value.lower() in ("true", "1", "yes", "on")
 
     async def _get_current_ai_model(self) -> str:
+        simple_env_model = os.getenv("AI_MODEL")
+        if simple_env_model:
+            return f"env_openai:{simple_env_model}"
+
         model = await chat_db_manager.get_global_setting("ai_model")
         if model:
             return model

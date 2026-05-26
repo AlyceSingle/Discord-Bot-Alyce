@@ -56,6 +56,7 @@ class OpenAICompatibleProvider(BaseProvider):
         provider_name: str = "openai_compatible",
         models: Optional[List[str]] = None,
         default_model: Optional[str] = None,
+        supports_vision: Optional[bool] = None,
     ):
         """
         初始化 OpenAI 兼容 Provider
@@ -74,6 +75,9 @@ class OpenAICompatibleProvider(BaseProvider):
         )
         self.default_model = default_model or "gpt-4o"
 
+        if supports_vision is not None:
+            self.supports_vision = supports_vision
+
         if models:
             self.supported_models = models
 
@@ -83,7 +87,8 @@ class OpenAICompatibleProvider(BaseProvider):
             log.warning(f"OpenAICompatibleProvider '{provider_name}' 未配置 API 密钥")
         else:
             log.info(
-                f"OpenAICompatibleProvider '{provider_name}' 初始化完成，base_url: {self.base_url}"
+                f"OpenAICompatibleProvider '{provider_name}' 初始化完成，"
+                f"base_url: {self.base_url}, supports_vision: {self.supports_vision}"
             )
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -436,21 +441,41 @@ class OpenAICompatibleProvider(BaseProvider):
 
             # 4. 如果 content 是列表（OpenAI 多部分格式）
             if content is not None and isinstance(content, list):
-                # 提取文本内容
-                text_parts = []
+                normalized_parts = []
+                has_non_text_part = False
+
                 for item in content:
                     if isinstance(item, str):
-                        text_parts.append(item)
-                    elif isinstance(item, dict) and item.get("type") == "text":
-                        text_parts.append(item.get("text", ""))
+                        normalized_parts.append({"type": "text", "text": item})
+                    elif isinstance(item, dict):
+                        if item.get("type") == "text":
+                            normalized_parts.append(
+                                {"type": "text", "text": item.get("text", "")}
+                            )
+                        elif item.get("type") == "image_url":
+                            normalized_parts.append(item)
+                            has_non_text_part = True
 
-                if text_parts:
-                    converted_messages.append(
-                        {
-                            "role": openai_role,
-                            "content": "\n".join(text_parts),
-                        }
-                    )
+                if normalized_parts:
+                    if has_non_text_part:
+                        converted_messages.append(
+                            {
+                                "role": openai_role,
+                                "content": normalized_parts,
+                            }
+                        )
+                    else:
+                        text_parts = [
+                            part.get("text", "")
+                            for part in normalized_parts
+                            if isinstance(part, dict) and part.get("type") == "text"
+                        ]
+                        converted_messages.append(
+                            {
+                                "role": openai_role,
+                                "content": "\n".join(text_parts),
+                            }
+                        )
                 continue
 
             # 5. 处理 Gemini 格式 (parts 字段)

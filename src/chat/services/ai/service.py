@@ -181,6 +181,9 @@ class AIService:
                 provider_name=config.name,
                 models=config.models,
                 default_model=config.default_model,
+                supports_vision=config.extra.get("supports_vision")
+                if config.extra
+                else None,
             )
 
         elif config.type == "custom":
@@ -413,7 +416,7 @@ class AIService:
             f"[AIService] 使用模型: {model_name} (实际: {actual_model}), Provider: {provider_name}"
         )
 
-        # 预处理消息：对于不支持视觉的 Provider，将图片转换为文字描述
+        # 预处理消息：对于不支持视觉的 Provider，按策略忽略图片或转为文字描述
         messages = await self._preprocess_messages_for_vision(
             messages, provider, **kwargs
         )
@@ -511,7 +514,7 @@ class AIService:
             f"[AIService] 使用模型: {model_name} (实际: {actual_model}), Provider: {provider_name} (with tools)"
         )
 
-        # 预处理消息：对于不支持视觉的 Provider，将图片转换为文字描述
+        # 预处理消息：对于不支持视觉的 Provider，按策略忽略图片或转为文字描述
         messages = await self._preprocess_messages_for_vision(
             messages, provider, **kwargs
         )
@@ -910,7 +913,7 @@ class AIService:
 
         对于不支持视觉的 Provider：
         - 如果 enable_vision=True（如投喂功能）：使用 Ollama Vision 将图片转换为文字描述
-        - 如果 enable_vision=False（如普通对话）：直接用占位符替换图片，不进行视觉转译
+        - 如果 enable_vision=False（如普通对话）：直接忽略图片，不进行视觉转译
 
         Args:
             messages: 对话消息列表
@@ -961,7 +964,7 @@ class AIService:
         else:
             _ollama_vision_service = None
             log.info(
-                "[AIService] 检测到图片内容，Provider 不支持视觉，使用占位符替换（节省内存）"
+                "[AIService] 检测到图片内容，Provider 不支持视觉，直接忽略图片（节省内存）"
             )
 
         # 处理每条消息
@@ -1020,18 +1023,8 @@ class AIService:
                                             "[图片内容: 处理失败]"
                                         )
                             else:
-                                # 不启用视觉转译时，根据 source 进行不同处理
-                                if source == "emoji":
-                                    # 表情包：直接过滤，不添加任何占位符
-                                    pass
-                                elif source == "sticker":
-                                    # 贴纸：直接过滤，不添加任何占位符
-                                    pass
-                                else:
-                                    # 附件图片：替换为占位符
-                                    image_descriptions.append(
-                                        "[图片: 当前类脑娘无法识别]"
-                                    )
+                                # 不启用视觉转译时，无论来源都直接忽略图片
+                                pass
 
                         elif part.get("type") == "image_url":
                             # OpenAI 格式：从 data URL 中提取 base64 图片
@@ -1092,18 +1085,8 @@ class AIService:
                                             "[图片内容: 处理失败]"
                                         )
                             else:
-                                # 不启用视觉转译时，根据 source 进行不同处理
-                                if source == "emoji":
-                                    # 表情包：直接过滤，不添加任何占位符
-                                    pass
-                                elif source == "sticker":
-                                    # 贴纸：直接过滤，不添加任何占位符
-                                    pass
-                                else:
-                                    # 附件图片：替换为占位符
-                                    image_descriptions.append(
-                                        "[图片: 当前类脑娘无法识别]"
-                                    )
+                                # 不启用视觉转译时，无论来源都直接忽略图片
+                                pass
 
                 # 合并文本和图片描述
                 final_text = "\n".join(text_parts)

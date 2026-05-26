@@ -8,6 +8,7 @@ import io
 import json
 import re
 import discord
+from PIL import Image
 
 from src.chat.config.prompts import PROMPT_CONFIG, PERSONA_VARIANTS
 from src.chat.config import chat_config

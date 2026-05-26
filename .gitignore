@@ -306,7 +306,6 @@ src/chat/features/games/blackjack-web/vite.config.ts
 # Ignore tutorial source files, as they are processed into the database
 tutorial/
 
-AGENTS.md
 
 # Local deploy artifacts
 odysseia-deploy.tar.gz
