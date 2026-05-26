@@ -132,6 +132,22 @@ GPT_IMAGE_CONFIG = {
     ),
 }
 
+# --- 公开 /生图 指令配置 ---
+IMAGE_COMMAND_CONFIG = {
+    "API_KEY": os.getenv("IMAGE_API_KEY", ""),
+    "BASE_URL": os.getenv("IMAGE_API_URL", "https://api.openai.com/v1"),
+    "MODEL": os.getenv("IMAGE_MODEL", "gpt-image-2"),
+    "SIZE": os.getenv("IMAGE_SIZE", "").strip(),
+    "TIMEOUT": float(os.getenv("IMAGE_TIMEOUT", "180")),
+    "RESPONSE_FORMAT": os.getenv("IMAGE_RESPONSE_FORMAT", "b64_json"),
+    "CONCURRENCY": max(1, int(os.getenv("IMAGE_CONCURRENCY", "1"))),
+    "USER_COOLDOWN_SECONDS": max(
+        0, int(os.getenv("IMAGE_USER_COOLDOWN_SECONDS", "60"))
+    ),
+    "MAX_PROMPT_LENGTH": max(1, int(os.getenv("IMAGE_MAX_PROMPT_LENGTH", "1000"))),
+    "MAX_IMAGE_BYTES": max(1, int(os.getenv("IMAGE_MAX_BYTES", str(10 * 1024 * 1024)))),
+}
+
 # --- 塔罗牌占卜功能配置 ---
 TAROT_CONFIG = {
     "CARDS_PATH": "src/chat/features/tarot/cards/",  # 存放78张塔罗牌图片的目录路径

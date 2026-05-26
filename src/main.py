@@ -270,7 +270,7 @@ class GuidanceBot(commands.Bot):
 
         # 定义所有需要扫描 cogs 的基础路径
         cog_paths_to_scan = [src_root / "chat" / "cogs"]
-        chat_only_allowed_cogs = {"ai_chat_cog.py"}
+        chat_only_allowed_cogs = {"ai_chat_cog.py", "image_command_cog.py"}
         if config.LIGHT_KNOWLEDGE_ADMIN_COMMANDS:
             chat_only_allowed_cogs.add("light_knowledge_admin_cog.py")
 
