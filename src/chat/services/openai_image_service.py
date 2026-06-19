@@ -23,6 +23,13 @@ class GeneratedImage:
     filename: str = "alyce-generated.png"
 
 
+@dataclass(frozen=True)
+class ReferenceImage:
+    data: bytes
+    mime_type: str
+    filename: str = "reference.png"
+
+
 class OpenAIImageService:
     def __init__(self, config: Optional[dict[str, Any]] = None) -> None:
         cfg = config or IMAGE_COMMAND_CONFIG
@@ -33,6 +40,9 @@ class OpenAIImageService:
         self.timeout = float(cfg["TIMEOUT"])
         self.response_format = cfg.get("RESPONSE_FORMAT", "b64_json")
         self.max_image_bytes = int(cfg["MAX_IMAGE_BYTES"])
+        self.max_reference_image_bytes = int(
+            cfg.get("MAX_REFERENCE_IMAGE_BYTES", self.max_image_bytes)
+        )
         self._client: Optional[httpx.AsyncClient] = None
 
     @property
@@ -45,31 +55,27 @@ class OpenAIImageService:
                 base_url=self.base_url,
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
-                    "Content-Type": "application/json",
                 },
                 timeout=self.timeout,
             )
         return self._client
 
-    async def generate_image(self, prompt: str) -> GeneratedImage:
+    async def generate_image(
+        self,
+        prompt: str,
+        reference_images: Optional[list[ReferenceImage]] = None,
+    ) -> GeneratedImage:
         prompt = prompt.strip()
         if not prompt:
             raise ImageGenerationError("提示词不能为空。")
         if not self.is_available:
             raise ImageGenerationError("生图服务未配置。")
 
-        body: dict[str, Any] = {
-            "model": self.model,
-            "prompt": prompt,
-            "n": 1,
-        }
-        if self.response_format:
-            body["response_format"] = self.response_format
-        if self.size:
-            body["size"] = self.size
-
         try:
-            response = await self._get_client().post("/images/generations", json=body)
+            if not reference_images:
+                response = await self._create_image(prompt)
+            else:
+                response = await self._edit_image(prompt, reference_images)
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             text = exc.response.text if exc.response is not None else str(exc)
@@ -80,6 +86,49 @@ class OpenAIImageService:
             raise ImageGenerationError("图片生成接口暂时不可用。") from exc
 
         return await self._extract_image(response.json())
+
+    async def _create_image(self, prompt: str) -> httpx.Response:
+        body: dict[str, Any] = {
+            "model": self.model,
+            "prompt": prompt,
+            "n": 1,
+        }
+        if self.response_format:
+            body["response_format"] = self.response_format
+        if self.size:
+            body["size"] = self.size
+
+        return await self._get_client().post("/images/generations", json=body)
+
+    async def _edit_image(
+        self,
+        prompt: str,
+        reference_images: list[ReferenceImage],
+    ) -> httpx.Response:
+        for ref in reference_images:
+            self._validate_reference_image(ref)
+        data: dict[str, str] = {
+            "model": self.model,
+            "prompt": prompt,
+            "n": "1",
+        }
+        if self.response_format:
+            data["response_format"] = self.response_format
+        if self.size:
+            data["size"] = self.size
+
+        files = [
+            (
+                "image",
+                (ref.filename, ref.data, ref.mime_type),
+            )
+            for ref in reference_images
+        ]
+        return await self._get_client().post(
+            "/images/edits",
+            data=data,
+            files=files,
+        )
 
     async def _extract_image(self, payload: dict[str, Any]) -> GeneratedImage:
         items = payload.get("data")
@@ -124,6 +173,14 @@ class OpenAIImageService:
             raise ImageGenerationError("图片为空。")
         if len(image_bytes) > self.max_image_bytes:
             raise ImageGenerationError("图片过大，已拒绝发送。")
+
+    def _validate_reference_image(self, reference_image: ReferenceImage) -> None:
+        if not reference_image.data:
+            raise ImageGenerationError("参考图为空。")
+        if len(reference_image.data) > self.max_reference_image_bytes:
+            raise ImageGenerationError("参考图太大，已拒绝处理。")
+        if not reference_image.mime_type.startswith("image/"):
+            raise ImageGenerationError("参考图必须是图片。")
 
     async def close(self) -> None:
         if self._client:

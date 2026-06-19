@@ -140,12 +140,15 @@ IMAGE_COMMAND_CONFIG = {
     "SIZE": os.getenv("IMAGE_SIZE", "").strip(),
     "TIMEOUT": float(os.getenv("IMAGE_TIMEOUT", "180")),
     "RESPONSE_FORMAT": os.getenv("IMAGE_RESPONSE_FORMAT", "b64_json"),
-    "CONCURRENCY": max(1, int(os.getenv("IMAGE_CONCURRENCY", "1"))),
+    "CONCURRENCY": max(1, int(os.getenv("IMAGE_CONCURRENCY", "2"))),
     "USER_COOLDOWN_SECONDS": max(
         0, int(os.getenv("IMAGE_USER_COOLDOWN_SECONDS", "60"))
     ),
     "MAX_PROMPT_LENGTH": max(1, int(os.getenv("IMAGE_MAX_PROMPT_LENGTH", "1000"))),
     "MAX_IMAGE_BYTES": max(1, int(os.getenv("IMAGE_MAX_BYTES", str(10 * 1024 * 1024)))),
+    "MAX_REFERENCE_IMAGE_BYTES": max(
+        1, int(os.getenv("IMAGE_MAX_REFERENCE_BYTES", str(3 * 1024 * 1024)))
+    ),
 }
 
 # --- 塔罗牌占卜功能配置 ---
