@@ -632,6 +632,7 @@ class OpenAICompatibleProvider(BaseProvider):
             "temperature": config.temperature,
             "top_p": config.top_p,
             "max_tokens": config.max_output_tokens,
+            "stream": False,
         }
 
         # 添加频率和存在惩罚
